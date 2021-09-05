@@ -7,12 +7,13 @@
 #include "RF24.h"
 #include "DataManager.h"
 
-#define DEBUG 
+#define DEBUG
 
 BluetoothSerial SerialBT;
 
 TFT_eSPI tft = TFT_eSPI();
 TFT_eSprite bluetoothConnection = TFT_eSprite(&tft);
+TFT_eSprite radioConnection = TFT_eSprite(&tft);
 TFT_eSprite dataReceived = TFT_eSprite(&tft);
 TFT_eSprite dataSent = TFT_eSprite(&tft);
 TFT_eSprite currentData = TFT_eSprite(&tft);
@@ -33,17 +34,23 @@ RF24 radio(13, 2);
 Loop screenLoop(2);
 Loop radioLoop(50);
 
+uint8_t dataCounter = 0;
+uint8_t heartBeatCounter = 0;
+uint8_t heartBeatEvery = 10;
+uint8_t failedHeartBeats = 0;
+uint8_t failedHeartBeatsTolerance = 10;
+float connectionQuality = 0;
+
 TimerEvent dataReceivedTimer;
 
 void registerCallback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param) {
   if (event == ESP_SPP_SRV_OPEN_EVT) {
-    Serial.println("Client Connected");
+    Serial.println(F("Client Connected"));
     bluetoothConnection.fillSprite(TFT_GREEN);
     bluetoothConnection.setTextColor(TFT_WHITE, TFT_GREEN);
     bluetoothConnection.drawString("CONNECTED", 12, 4);
-    bluetoothConnection.pushSprite(0,0);
-  }
-  else if(event == ESP_SPP_CLOSE_EVT){
+    bluetoothConnection.pushSprite(0, 0);
+  } else if (event == ESP_SPP_CLOSE_EVT) {
     bluetoothConnection.fillSprite(TFT_RED);
     bluetoothConnection.setTextColor(TFT_WHITE, TFT_RED);
     bluetoothConnection.drawString("DISCONNECTED", 5, 4);
@@ -53,28 +60,27 @@ void registerCallback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param) {
 
 void createSprites() {
   bluetoothConnection.createSprite(80, 15);
+  radioConnection.createSprite(80, 15);
   dataReceived.createSprite(HEIGHT, 10);
   dataSent.createSprite(HEIGHT, 10);
 }
 
 void updateData() {
-  
 }
 
-void updateConnectionCallback(){  
+void updateConnectionCallback() {
   receivingBtData = false;
-  Serial.println("data Callback");
+  //Serial.println("data Callback");
 }
 
 void statusDataReceived() {
-
 }
 
 struct bluetoothRadioMessage {
   char throttle[4];
   char yaw[4];
   char roll[4];
-  char pitch[4];  
+  char pitch[4];
 };
 
 bluetoothRadioMessage *bluetoothMessage = new bluetoothRadioMessage;
@@ -104,7 +110,23 @@ void extractData(char array[]) {
   for (int i = 0; i < 4; i++) {
     bluetoothMessage->pitch[i] = array[index];
     index++;
-  }  
+  }
+}
+
+void setupRadio() {
+  if (!radio.begin()) {
+    Serial.println(F("Radio hardware is not responding!!"));
+  } else {
+    Serial.println(F("Radio ok!"));
+  }
+
+  radio.setPALevel(RF24_PA_MAX);
+  radio.setChannel(115);
+  radio.openWritingPipe(transmissionPipe);
+  radio.openReadingPipe(1, readingPipe);
+  radio.setDataRate(RF24_250KBPS);
+  radio.setCRCLength(RF24_CRC_16);
+  radio.stopListening();
 }
 
 void setup(void) {
@@ -112,12 +134,9 @@ void setup(void) {
   tft.setRotation(1);
   tft.fillScreen(TFT_BLACK);
 
-  radio.begin();
-  radio.openWritingPipe(transmissionPipe);
-  radio.openReadingPipe(1, readingPipe);
-  radio.setDataRate(RF24_250KBPS);
-  radio.setCRCLength(RF24_CRC_16);
-  radio.stopListening();
+  Serial.begin(115200);
+
+  setupRadio();
 
   SerialBT.register_callback(registerCallback);
   SerialBT.begin("AircraftController");
@@ -128,65 +147,128 @@ void setup(void) {
 
   bluetoothConnection.fillSprite(TFT_RED);
   bluetoothConnection.setTextColor(TFT_WHITE, TFT_RED);
+  //bluetoothConnection.setTextSize(1);
   bluetoothConnection.drawString("DISCONNECTED", 5, 4);
   bluetoothConnection.pushSprite(0, 0);
-
-  Serial.begin(115200);
 }
 
 void loop() {
-  uint8_t dataCounter = 0;
+
   dataReceivedTimer.update();
 
-  if (screenLoop.ok()) {    
-    if(receivingBtData){
-      dataReceived.fillSprite(TFT_BLACK);      
-      dataReceived.drawString("Receiving BT data.", 0,0);
-      dataReceived.pushSprite(0, 30);
-    }
-    else{
+  if (screenLoop.ok()) {
+    if (receivingBtData) {
       dataReceived.fillSprite(TFT_BLACK);
-      dataReceived.pushSprite(0,30);
+      dataReceived.drawString("Receiving BT data.", 0, 0);
+      dataReceived.pushSprite(0, 30);
+    } else {
+      dataReceived.fillSprite(TFT_BLACK);
+      dataReceived.pushSprite(0, 30);
     }
   }
 
-  if (radioLoop.ok()) {    
-    if(dataReady){      
+  if (radioLoop.ok()) {
 #ifdef DEBUG
-      Serial.println("Sending data"); 
-#endif    
+    Serial.println(F("Sending data"));
+#endif
+    dataReady = false;
+    heartBeatCounter++;
+    if (heartBeatCounter < heartBeatEvery) {
       data[16] = '?';
-      radio.write(data, sizeof(data));
-      dataReady = false;
+      if (!radio.write(data, sizeof(data)))
+        setupRadio();
+    } 
+    
+    else if (heartBeatCounter == heartBeatEvery) {
+      data[16] = '!';
+      if (!radio.write(data, sizeof(data)))
+        setupRadio();
+      radio.startListening();      
+    } 
+    
+    else {
+#ifdef DEBUG
+      Serial.print(F("Waiting heartBeat... "));
+#endif
+      if (radio.available()) {
+        char heartBeat[5];
+        radio.read(heartBeat, sizeof(heartBeat));
+        radio.stopListening();
+#ifdef DEBUG
+        Serial.println(F("done"));
+#endif
+        failedHeartBeats = 0;
+      } else {
+#ifdef DEBUG
+        Serial.println(F("failed"));
+#endif
+        failedHeartBeats++;
+      }
+      heartBeatCounter = 0;
+
+      if (failedHeartBeats < failedHeartBeatsTolerance) {
+        radioConnection.fillSprite(TFT_GREEN);
+        radioConnection.setTextColor(TFT_WHITE, TFT_GREEN);
+        radioConnection.drawString("CONNECTED", 5, 4);
+        radioConnection.pushSprite(150, 0);
+
+        float newQuality = (failedHeartBeatsTolerance-failedHeartBeats)/failedHeartBeatsTolerance * 100;              
+        if(connectionQuality == 0)
+          connectionQuality = newQuality;
+        else
+          connectionQuality = connectionQuality * (0.95) + newQuality * (0.05);
+
+        char string[40];
+        sprintf(string, "Connection quality: %d %%" , int(connectionQuality));
+        SerialBT.println(string);        
+      } else {
+        radioConnection.fillSprite(TFT_RED);
+        radioConnection.setTextColor(TFT_WHITE, TFT_RED);
+        radioConnection.drawString("DISCONNECTED", 5, 4);
+        radioConnection.pushSprite(150, 0);
+        connectionQuality = 0;
+        SerialBT.println("No response from drone radio!");
+      }
+
+      
     }
   }
-  
-  while (SerialBT.available()) {    
+
+  if (SerialBT.available()) {
     char byteRead = SerialBT.read();
-    if(byteRead == '?'){ //end of message
-      if(dataCounter == sizeof(data)-1){
+    //Serial.println(char(byteRead));
+    if (char(byteRead) == '?') {  //end of message
+      if (dataCounter == sizeof(data) - 1) {
         dataReady = true;
-        extractData(data);       
-      }  
-      else{
-        Serial.println("Broken message!");        
+        extractData(data);
+        for(int i=0; i<sizeof(data); i++){
+          Serial.print(char(data[i]));
+        }
+        Serial.println();
+      } else {
+#ifdef DEBUG
+        Serial.print(F("Broken message:"));
+        for (int i = 0; i < sizeof(data); i++) {
+          Serial.print(F(char(data[i])));
+        }
+        Serial.println();
+#endif
       }
       dataCounter = 0;
-    }
-    else{
+    } else {
       data[dataCounter] = byteRead;
       dataCounter++;
-      if(dataCounter == sizeof(data))
-        dataCounter = 0;      
+      if (dataCounter == sizeof(data))
+        dataCounter = 0;
     }
-            
+
     receivingBtData = true;
     dataReceivedTimer.reset();
   }
 
-  if(Serial.available()){  
-    while(Serial.available()) {
-      SerialBT.print(char(Serial.read()));
+  if (Serial.available()) {
+    while (Serial.available()) {
+      SerialBT.print(F(char(Serial.read())));
     }
     SerialBT.println();
   }
