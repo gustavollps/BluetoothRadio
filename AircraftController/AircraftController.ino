@@ -27,18 +27,18 @@ const uint64_t readingPipe = 0xF0F0F0F0D2LL;
 
 boolean receivingBtData = false;
 bool dataReady = false;
-char data[17];
+char data[18];
 
 RF24 radio(13, 2);
 
 Loop screenLoop(2);
-Loop radioLoop(50);
+Loop radioLoop(20);
 
 uint8_t dataCounter = 0;
-uint8_t heartBeatCounter = 0;
 uint8_t heartBeatEvery = 10;
-uint8_t failedHeartBeats = 0;
+uint8_t heartBeatCounter = heartBeatEvery;
 uint8_t failedHeartBeatsTolerance = 10;
+uint8_t failedHeartBeats = failedHeartBeatsTolerance;
 float connectionQuality = 0;
 
 TimerEvent dataReceivedTimer;
@@ -81,6 +81,7 @@ struct bluetoothRadioMessage {
   char yaw[4];
   char roll[4];
   char pitch[4];
+  char flightMode;
 };
 
 bluetoothRadioMessage *bluetoothMessage = new bluetoothRadioMessage;
@@ -96,21 +97,18 @@ void extractData(char array[]) {
   */
   int index = 0;
   for (int i = 0; i < 4; i++) {
-    bluetoothMessage->throttle[i] = array[index];
-    index++;
+    bluetoothMessage->throttle[i] = array[index++];    
   }
   for (int i = 0; i < 4; i++) {
-    bluetoothMessage->yaw[i] = array[index];
-    index++;
+    bluetoothMessage->yaw[i] = array[index++];    
   }
   for (int i = 0; i < 4; i++) {
-    bluetoothMessage->roll[i] = array[index];
-    index++;
+    bluetoothMessage->roll[i] = array[index++];    
   }
   for (int i = 0; i < 4; i++) {
-    bluetoothMessage->pitch[i] = array[index];
-    index++;
+    bluetoothMessage->pitch[i] = array[index++];    
   }
+  bluetoothMessage->flightMode = array[index];
 }
 
 void setupRadio() {
@@ -120,7 +118,7 @@ void setupRadio() {
     Serial.println(F("Radio ok!"));
   }
 
-  radio.setPALevel(RF24_PA_MAX);
+  radio.setPALevel(RF24_PA_HIGH);
   radio.setChannel(115);
   radio.openWritingPipe(transmissionPipe);
   radio.openReadingPipe(1, readingPipe);
@@ -173,16 +171,18 @@ void loop() {
 #endif
     dataReady = false;
     heartBeatCounter++;
-    if (heartBeatCounter < heartBeatEvery) {
-      data[16] = '?';
-      if (!radio.write(data, sizeof(data)))
+    if (heartBeatCounter < heartBeatEvery) {      
+      data[sizeof(data)-1] = '?';
+      if (!radio.write(data, sizeof(data))){
         setupRadio();
+      }
     } 
     
     else if (heartBeatCounter == heartBeatEvery) {
-      data[16] = '!';
-      if (!radio.write(data, sizeof(data)))
+      data[sizeof(data)-1] = '!';
+      if (!radio.write(data, sizeof(data))){
         setupRadio();
+      }
       radio.startListening();      
     } 
     
@@ -227,10 +227,8 @@ void loop() {
         radioConnection.drawString("DISCONNECTED", 5, 4);
         radioConnection.pushSprite(150, 0);
         connectionQuality = 0;
-        SerialBT.println("No response from drone radio!");
-      }
-
-      
+        SerialBT.println(F("No response from drone radio!"));
+      }      
     }
   }
 
@@ -241,10 +239,12 @@ void loop() {
       if (dataCounter == sizeof(data) - 1) {
         dataReady = true;
         extractData(data);
+        
         for(int i=0; i<sizeof(data); i++){
           Serial.print(char(data[i]));
         }
         Serial.println();
+        
       } else {
 #ifdef DEBUG
         Serial.print(F("Broken message:"));

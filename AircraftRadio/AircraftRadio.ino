@@ -22,13 +22,14 @@ TimerEvent disconnection;
 const uint64_t transmissionPipe = 0xE8E8F0F0E1LL;
 const uint64_t receivePipe = 0xF0F0F0F0D2LL;
 
-RF24 radio(7, 8); //CE, CSN
+RF24 radio(A0, A1); //CE, CSN
 
 struct bluetoothRadioMessage {
   char throttle[4];
   char yaw[4];
   char roll[4];
   char pitch[4];
+  char flightMode;
   char endingPoint;
 };
 
@@ -43,7 +44,7 @@ int charArrayToInt(char array[4]) {
 
 bluetoothRadioMessage *bluetoothMessage = new bluetoothRadioMessage;
 
-bool extractData(byte array[]) {
+bool extractData(char array[]) {
   /**
   * Data structure:
   * string: throttle (0000-1000)
@@ -54,25 +55,24 @@ bool extractData(byte array[]) {
   */
   int index = 0;
   for (int i = 0; i < 4; i++) {
-    bluetoothMessage->throttle[i] = array[index];
-    index++;
+    bluetoothMessage->throttle[i] = array[index++];    
   }
   for (int i = 0; i < 4; i++) {
-    bluetoothMessage->yaw[i] = array[index];
-    index++;
+    bluetoothMessage->yaw[i] = array[index++];    
   }
   for (int i = 0; i < 4; i++) {
-    bluetoothMessage->roll[i] = array[index];
-    index++;
+    bluetoothMessage->roll[i] = array[index++];    
   }
   for (int i = 0; i < 4; i++) {
-    bluetoothMessage->pitch[i] = array[index];
-    index++;
+    bluetoothMessage->pitch[i] = array[index++];    
   }
+
+  bluetoothMessage->flightMode = array[index++];
+  
   if (array[index] == '?')
     return true;
   else if(array[index] == '!'){    
-    Serial.println("Received hearbeat request");
+    Serial.println(F("Received hearbeat request. "));    
     sendHeartBeat();  
     return true;  
   }
@@ -84,7 +84,7 @@ void setupRadio() {
   if (!radio.begin()) {
     Serial.println(F("Radio hardware is not responding!!"));    
   }
-  radio.setPALevel(RF24_PA_MAX);
+  radio.setPALevel(RF24_PA_HIGH);
   radio.setChannel(115);
   radio.openWritingPipe(receivePipe);  //inverted
   radio.openReadingPipe(1, transmissionPipe);
@@ -96,10 +96,10 @@ void setupRadio() {
 void sendHeartBeat(){
   radio.stopListening();
   char heartbeat[5] = {'0','1','2','3','4'};
-  Serial.println("Sending heartbeat");
+  Serial.println(F("Sending heartbeat"));
   if(!radio.write(heartbeat,sizeof(heartbeat))){
     setupRadio();
-    Serial.println("Failed to send heartbeat");  
+    Serial.println(F("Failed to send heartbeat"));
   }  
   radio.startListening();
 }
@@ -110,7 +110,7 @@ void disconnectAction(){
 
 void setup(void) {
   Serial.begin(115200);
-  Serial.println("usb connected");
+  Serial.println(F("USB connected."));
 
   setupRadio();
 
@@ -119,15 +119,16 @@ void setup(void) {
   roll.attach(2);//2-A0
   pitch.attach(3);//3-A1
   channel5.attach(6);
-  channel6.attach(A0);
-  channel7.attach(A1);
-  channel8.attach(A2);  
+  channel6.attach(7);
+  channel7.attach(8);
+  channel8.attach(9);  
+  channel5.writeMicroseconds(1500);
 
   disconnection.set(500,disconnectAction);
 }
 
 void loop() {
-  byte data[17];
+  char data[18];
   disconnection.update();
   if (radio.available()) {
     disconnection.reset();
@@ -135,7 +136,7 @@ void loop() {
 
 #ifdef DEBUG        
     for(int i=0;i<sizeof(data);i++){
-      Serial.print(char(data[i]));
+      Serial.print(data[i]);
     }
     Serial.println();
 #endif  
@@ -143,14 +144,16 @@ void loop() {
     if (extractData(data)) {
 
 #ifdef DEBUG
-      Serial.print("Throttle: ");
+      Serial.print(F("Throttle: "));
       Serial.print(charArrayToInt(bluetoothMessage->throttle));
-      Serial.print("Yaw: ");
+      Serial.print(F("Yaw: "));
       Serial.print(charArrayToInt(bluetoothMessage->yaw));
-      Serial.print("Roll: ");
+      Serial.print(F("Roll: "));
       Serial.print(charArrayToInt(bluetoothMessage->roll));
-      Serial.print("Pitch: ");
+      Serial.print(F("Pitch: "));
       Serial.print(charArrayToInt(bluetoothMessage->pitch));
+      Serial.print("Flight mode: ");
+      Serial.print(char(bluetoothMessage->flightMode));
       Serial.println();
 #endif
 
@@ -158,6 +161,26 @@ void loop() {
       yaw.writeMicroseconds(1000 + charArrayToInt(bluetoothMessage->yaw));
       roll.writeMicroseconds(1000 + charArrayToInt(bluetoothMessage->roll));
       pitch.writeMicroseconds(1000 + charArrayToInt(bluetoothMessage->pitch));
+      switch(bluetoothMessage->flightMode){
+        case 'S':
+          channel5.writeMicroseconds(1000);
+          break;
+        case 'H':
+          channel5.writeMicroseconds(1300);
+          break;
+        case 'L':
+          channel5.writeMicroseconds(1400);
+          break;
+        case 'A':
+          channel5.writeMicroseconds(1550);
+          break;
+        case 'B':
+          channel5.writeMicroseconds(1700);          
+          break;
+        default:      
+          channel5.writeMicroseconds(1000);
+          break;
+      }
     }
   }
 }
