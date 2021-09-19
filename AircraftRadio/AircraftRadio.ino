@@ -22,7 +22,9 @@ TimerEvent disconnection;
 const uint64_t transmissionPipe = 0xE8E8F0F0E1LL;
 const uint64_t receivePipe = 0xF0F0F0F0D2LL;
 
-RF24 radio(A0, A1); //CE, CSN
+byte ack[5] = { '0', '1', '2', '3', '4' };
+
+RF24 radio(A0, A1);  //CE, CSN
 
 struct bluetoothRadioMessage {
   char throttle[4];
@@ -55,57 +57,60 @@ bool extractData(char array[]) {
   */
   int index = 0;
   for (int i = 0; i < 4; i++) {
-    bluetoothMessage->throttle[i] = array[index++];    
+    bluetoothMessage->throttle[i] = array[index++];
   }
   for (int i = 0; i < 4; i++) {
-    bluetoothMessage->yaw[i] = array[index++];    
+    bluetoothMessage->yaw[i] = array[index++];
   }
   for (int i = 0; i < 4; i++) {
-    bluetoothMessage->roll[i] = array[index++];    
+    bluetoothMessage->roll[i] = array[index++];
   }
   for (int i = 0; i < 4; i++) {
-    bluetoothMessage->pitch[i] = array[index++];    
+    bluetoothMessage->pitch[i] = array[index++];
   }
 
   bluetoothMessage->flightMode = array[index++];
-  
+
   if (array[index] == '?')
-    return true;
-  else if(array[index] == '!'){    
-    Serial.println(F("Received hearbeat request. "));    
-    sendHeartBeat();  
     return true;  
-  }
   else
     return false;
 }
 
 void setupRadio() {
   if (!radio.begin()) {
-    Serial.println(F("Radio hardware is not responding!!"));    
+    Serial.println(F("Radio hardware is not responding!!"));
   }
-  radio.setPALevel(RF24_PA_HIGH);
-  radio.setChannel(115);
+  radio.setPALevel(RF24_PA_HIGH);  
+  radio.setChannel(1);
+
+  radio.setAutoAck(true);
+  radio.enableDynamicPayloads();
+  radio.enableAckPayload();
+
   radio.openWritingPipe(receivePipe);  //inverted
   radio.openReadingPipe(1, transmissionPipe);
   radio.setDataRate(RF24_250KBPS);
   radio.setCRCLength(RF24_CRC_16);
+  
+  radio.writeAckPayload(1, &ack, sizeof(ack));  
   radio.startListening();
 }
 
-void sendHeartBeat(){
+void sendHeartBeat() {
   radio.stopListening();
-  char heartbeat[5] = {'0','1','2','3','4'};
+  char heartbeat[5] = { '0', '1', '2', '3', '4' };
   Serial.println(F("Sending heartbeat"));
-  if(!radio.write(heartbeat,sizeof(heartbeat))){
+  if (!radio.write(heartbeat, sizeof(heartbeat))) {
     setupRadio();
     Serial.println(F("Failed to send heartbeat"));
-  }  
+  }
   radio.startListening();
 }
 
-void disconnectAction(){
+void disconnectAction() {
   throttle.writeMicroseconds(900);
+  setupRadio();
 }
 
 void setup(void) {
@@ -114,32 +119,47 @@ void setup(void) {
 
   setupRadio();
 
-  throttle.attach(4);//4-A2
-  yaw.attach(5);//5-A3
-  roll.attach(2);//2-A0
-  pitch.attach(3);//3-A1
+  throttle.attach(4);  //4-A2
+  yaw.attach(5);       //5-A3
+  roll.attach(2);      //2-A0
+  pitch.attach(3);     //3-A1
   channel5.attach(6);
   channel6.attach(7);
   channel7.attach(8);
-  channel8.attach(9);  
+  channel8.attach(9);
   channel5.writeMicroseconds(1500);
 
-  disconnection.set(500,disconnectAction);
+  disconnection.set(500, disconnectAction);
 }
+
+uint32_t oldTime = millis();
+int dataCounter = 0;
 
 void loop() {
   char data[18];
   disconnection.update();
   if (radio.available()) {
-    disconnection.reset();
-    radio.read(data, sizeof(data));
+    //TODO change ack value for some feedback
+    radio.writeAckPayload(1, &ack, sizeof(ack));
 
-#ifdef DEBUG        
-    for(int i=0;i<sizeof(data);i++){
+    dataCounter++;
+    if (millis() - oldTime > 1000) {
+      Serial.println(dataCounter);
+      dataCounter = 0;
+      oldTime+=1000;
+    }
+    disconnection.reset();
+    uint8_t bytes = radio.getDynamicPayloadSize();  // get the size of the payload
+    
+    radio.read(data, sizeof(data));
+    
+
+#ifdef DEBUG
+    for (int i = 0; i < sizeof(data); i++) {
       Serial.print(data[i]);
     }
     Serial.println();
-#endif  
+#endif
 
     if (extractData(data)) {
 
@@ -161,7 +181,7 @@ void loop() {
       yaw.writeMicroseconds(1000 + charArrayToInt(bluetoothMessage->yaw));
       roll.writeMicroseconds(1000 + charArrayToInt(bluetoothMessage->roll));
       pitch.writeMicroseconds(1000 + charArrayToInt(bluetoothMessage->pitch));
-      switch(bluetoothMessage->flightMode){
+      switch (bluetoothMessage->flightMode) {
         case 'S':
           channel5.writeMicroseconds(1000);
           break;
@@ -175,9 +195,9 @@ void loop() {
           channel5.writeMicroseconds(1550);
           break;
         case 'B':
-          channel5.writeMicroseconds(1700);          
+          channel5.writeMicroseconds(1700);
           break;
-        default:      
+        default:
           channel5.writeMicroseconds(1000);
           break;
       }

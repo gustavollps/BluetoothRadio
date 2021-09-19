@@ -15,6 +15,7 @@ TFT_eSPI tft = TFT_eSPI();
 TFT_eSprite bluetoothConnection = TFT_eSprite(&tft);
 TFT_eSprite radioConnection = TFT_eSprite(&tft);
 TFT_eSprite dataReceived = TFT_eSprite(&tft);
+TFT_eSprite dataRadioReceived = TFT_eSprite(&tft);
 TFT_eSprite dataSent = TFT_eSprite(&tft);
 TFT_eSprite currentData = TFT_eSprite(&tft);
 
@@ -32,14 +33,14 @@ char data[18];
 RF24 radio(13, 2);
 
 Loop screenLoop(2);
-Loop radioLoop(20);
+Loop radioLoop(50);
 
 uint8_t dataCounter = 0;
-uint8_t heartBeatEvery = 10;
-uint8_t heartBeatCounter = heartBeatEvery;
-uint8_t failedHeartBeatsTolerance = 10;
+uint8_t failedHeartBeatsTolerance = 50; //1s without ack (50 messages)
 uint8_t failedHeartBeats = failedHeartBeatsTolerance;
+uint32_t lastResponse = 0;
 float connectionQuality = 0;
+uint8_t consecutiveFails = 0;
 
 TimerEvent dataReceivedTimer;
 
@@ -62,6 +63,7 @@ void createSprites() {
   bluetoothConnection.createSprite(80, 15);
   radioConnection.createSprite(80, 15);
   dataReceived.createSprite(HEIGHT, 10);
+  dataRadioReceived.createSprite(HEIGHT, 10);
   dataSent.createSprite(HEIGHT, 10);
 }
 
@@ -113,17 +115,27 @@ void extractData(char array[]) {
 
 void setupRadio() {
   if (!radio.begin()) {
+#ifdef DEBUG    
     Serial.println(F("Radio hardware is not responding!!"));
+#endif    
   } else {
+#ifdef DEBUG    
     Serial.println(F("Radio ok!"));
+#endif
   }
 
   radio.setPALevel(RF24_PA_HIGH);
-  radio.setChannel(115);
+  radio.setChannel(1);
+  
+  radio.setAutoAck(true);
+  radio.enableDynamicPayloads();  
+  radio.enableAckPayload();
+  
   radio.openWritingPipe(transmissionPipe);
   radio.openReadingPipe(1, readingPipe);
   radio.setDataRate(RF24_250KBPS);
   radio.setCRCLength(RF24_CRC_16);
+
   radio.stopListening();
 }
 
@@ -157,93 +169,86 @@ void loop() {
   if (screenLoop.ok()) {
     if (receivingBtData) {
       dataReceived.fillSprite(TFT_BLACK);
-      dataReceived.drawString("Receiving BT data.", 0, 0);
+      dataReceived.drawString("Incoming BT.", 0, 0);
       dataReceived.pushSprite(0, 30);
     } else {
       dataReceived.fillSprite(TFT_BLACK);
       dataReceived.pushSprite(0, 30);
     }
+
+    if(failedHeartBeats < failedHeartBeatsTolerance){
+      radioConnection.fillSprite(TFT_GREEN);
+      radioConnection.setTextColor(TFT_WHITE, TFT_GREEN);
+      radioConnection.drawString("CONNECTED", 5, 4);
+      radioConnection.pushSprite(150, 0);  
+      float newQuality = constrain((float(failedHeartBeatsTolerance)-float(failedHeartBeats))/float(failedHeartBeatsTolerance)* 100.0, 0.0, 100.0);
+      if(connectionQuality == 0)
+        connectionQuality = newQuality;
+      else
+        connectionQuality = connectionQuality * (0.95) + newQuality * (0.05);
+
+      char string[60];
+      sprintf(string, "Connection quality: %d %%\nLast response: %.2f?" , int(connectionQuality), float(millis() - lastResponse)/1000.0);
+      SerialBT.println(string);              
+    }
+    else{
+      radioConnection.fillSprite(TFT_RED);
+      radioConnection.setTextColor(TFT_WHITE, TFT_RED);
+      radioConnection.drawString("DISCONNECTED", 5, 4);
+      radioConnection.pushSprite(150, 0);
+      SerialBT.println(F("No response from drone radio!"));
+    }
+    Serial.println(connectionQuality);
+
+    dataRadioReceived.fillSprite(TFT_BLACK);
+    char stringRadio[15];
+    sprintf(stringRadio,"Radio: %d", int(connectionQuality));
+    dataRadioReceived.drawString(stringRadio, 0, 0);
+    dataRadioReceived.pushSprite(150, 30);    
   }
 
   if (radioLoop.ok()) {
 #ifdef DEBUG
     Serial.println(F("Sending data"));
 #endif
-    dataReady = false;
-    heartBeatCounter++;
-    if (heartBeatCounter < heartBeatEvery) {      
-      data[sizeof(data)-1] = '?';
-      if (!radio.write(data, sizeof(data))){
-        setupRadio();
-      }
-    } 
-    
-    else if (heartBeatCounter == heartBeatEvery) {
-      data[sizeof(data)-1] = '!';
-      if (!radio.write(data, sizeof(data))){
-        setupRadio();
-      }
-      radio.startListening();      
-    } 
-    
-    else {
-#ifdef DEBUG
-      Serial.print(F("Waiting heartBeat... "));
-#endif
-      if (radio.available()) {
-        char heartBeat[5];
-        radio.read(heartBeat, sizeof(heartBeat));
-        radio.stopListening();
-#ifdef DEBUG
-        Serial.println(F("done"));
-#endif
-        failedHeartBeats = 0;
-      } else {
-#ifdef DEBUG
-        Serial.println(F("failed"));
-#endif
-        failedHeartBeats++;
-      }
-      heartBeatCounter = 0;
-
-      if (failedHeartBeats < failedHeartBeatsTolerance) {
-        radioConnection.fillSprite(TFT_GREEN);
-        radioConnection.setTextColor(TFT_WHITE, TFT_GREEN);
-        radioConnection.drawString("CONNECTED", 5, 4);
-        radioConnection.pushSprite(150, 0);
-
-        float newQuality = (failedHeartBeatsTolerance-failedHeartBeats)/failedHeartBeatsTolerance * 100;              
-        if(connectionQuality == 0)
-          connectionQuality = newQuality;
-        else
-          connectionQuality = connectionQuality * (0.95) + newQuality * (0.05);
-
-        char string[40];
-        sprintf(string, "Connection quality: %d %%" , int(connectionQuality));
-        SerialBT.println(string);        
-      } else {
-        radioConnection.fillSprite(TFT_RED);
-        radioConnection.setTextColor(TFT_WHITE, TFT_RED);
-        radioConnection.drawString("DISCONNECTED", 5, 4);
-        radioConnection.pushSprite(150, 0);
-        connectionQuality = 0;
-        SerialBT.println(F("No response from drone radio!"));
-      }      
+    dataReady = false;    
+         
+    data[sizeof(data)-1] = '?';
+    if (!radio.write(data, sizeof(data))){
+      setupRadio();      
+      connectionQuality = 0;
+      failedHeartBeats++;      
     }
+    else{
+      failedHeartBeats=0;
+      lastResponse = millis();    
+      if(radio.isAckPayloadAvailable()){
+        char heartBeat[5] = {0};
+        char expectedBeat[5] = {'0','1','2','3','4'};
+        int matchesCounter = 0;        
+        radio.read(heartBeat, sizeof(heartBeat));
+
+        //radio.stopListening();
+        for(int i=0;i<sizeof(heartBeat);i++){
+          if(heartBeat[i] == expectedBeat[i]){
+            matchesCounter++;
+          }            
+        }        
+        //Serial.println("GOT PAYLOAD");        
+      }
+      else{
+        //Serial.println("ACK WITHOUT PAYLOAD");
+      }                               
+    }                                           
   }
 
   if (SerialBT.available()) {
     char byteRead = SerialBT.read();
-    //Serial.println(char(byteRead));
+
     if (char(byteRead) == '?') {  //end of message
       if (dataCounter == sizeof(data) - 1) {
         dataReady = true;
-        extractData(data);
-        
-        for(int i=0; i<sizeof(data); i++){
-          Serial.print(char(data[i]));
-        }
-        Serial.println();
+        extractData(data);                
         
       } else {
 #ifdef DEBUG
