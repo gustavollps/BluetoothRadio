@@ -7,6 +7,7 @@
 #include <Loop.h>
 
 //#define DEBUG
+//#define DEBUG_RAW
 
 Servo throttle;
 Servo yaw;
@@ -24,6 +25,16 @@ const uint64_t receivePipe = 0xF0F0F0F0D2LL;
 
 byte ack[5] = { '0', '1', '2', '3', '4' };
 
+char data[20];
+char defaultData[20] = {
+  '0', '5', '0', '0',
+  '0', '5', '0', '0',
+  '0', '5', '0', '0',
+  '0', '5', '0', '0',
+  '0', '0', '1', '?'
+};
+
+
 RF24 radio(A0, A1);  //CE, CSN
 
 struct bluetoothRadioMessage {
@@ -32,6 +43,8 @@ struct bluetoothRadioMessage {
   char roll[4];
   char pitch[4];
   char flightMode;
+  char ch7;
+  char ch8;
   char endingPoint;
 };
 
@@ -56,33 +69,82 @@ bool extractData(char array[]) {
   * message end point : "?"
   */
   int index = 0;
+  int test = 0;
+  int correctData = 0;
   for (int i = 0; i < 4; i++) {
-    bluetoothMessage->throttle[i] = array[index++];
+    bluetoothMessage->throttle[i] = array[index++];      
   }
-  for (int i = 0; i < 4; i++) {
-    bluetoothMessage->yaw[i] = array[index++];
+  test = charArrayToInt(bluetoothMessage->throttle);
+  if(test >=0 && test <= 1000 ){
+    correctData++;
   }
+
   for (int i = 0; i < 4; i++) {
-    bluetoothMessage->roll[i] = array[index++];
+    bluetoothMessage->yaw[i] = array[index++];      
   }
+  test = charArrayToInt(bluetoothMessage->yaw);
+  if(test >=0 && test <= 1000 ){
+    correctData++;
+  }
+
   for (int i = 0; i < 4; i++) {
-    bluetoothMessage->pitch[i] = array[index++];
+    bluetoothMessage->roll[i] = array[index++];    
+    
+  }
+  test = charArrayToInt(bluetoothMessage->roll);
+  if(test >=0 && test <= 1000 ){
+    correctData++;
+  }
+
+  for (int i = 0; i < 4; i++) {
+    bluetoothMessage->pitch[i] = array[index++];            
+  }
+  test = charArrayToInt(bluetoothMessage->pitch);
+  if(test >=0 && test <= 1000 ){
+    correctData++;
   }
 
   bluetoothMessage->flightMode = array[index++];
+  bluetoothMessage->ch7 = array[index++];
+  bluetoothMessage->ch8 = array[index];
 
-  if (array[index] == '?')
-    return true;  
-  else
+  if(correctData == 4){
+    return true;        
+  }
+  else{    
+    resetBluetoothMessage();
     return false;
+  }
+}
+
+void resetBluetoothMessage(){
+  char defaultValue[4] = {'0', '5','0','0'};
+  for(int i=0;i<4;i++){
+    bluetoothMessage->pitch[i] = defaultValue[i];
+  }
+  for(int i=0;i<4;i++){
+    bluetoothMessage->roll[i] = defaultValue[i];
+  }
+  for(int i=0;i<4;i++){
+    bluetoothMessage->yaw[i] = defaultValue[i];
+  }
+  for(int i=0;i<4;i++){
+    bluetoothMessage->throttle[i] = defaultValue[i];
+  }
+  bluetoothMessage->flightMode  = '1';
+  bluetoothMessage->ch7 = '0';
+  bluetoothMessage->ch8 = '0';
 }
 
 void setupRadio() {
   if (!radio.begin()) {
     Serial.println(F("Radio hardware is not responding!!"));
   }
-  radio.setPALevel(RF24_PA_HIGH);  
-  radio.setChannel(1);
+  else{
+    Serial.println(F("Radio ok!"));
+  }
+  radio.setPALevel(RF24_PA_MAX);  
+  radio.setChannel(100);
 
   radio.setAutoAck(true);
   radio.enableDynamicPayloads();
@@ -94,17 +156,6 @@ void setupRadio() {
   radio.setCRCLength(RF24_CRC_16);
   
   radio.writeAckPayload(1, &ack, sizeof(ack));  
-  radio.startListening();
-}
-
-void sendHeartBeat() {
-  radio.stopListening();
-  char heartbeat[5] = { '0', '1', '2', '3', '4' };
-  Serial.println(F("Sending heartbeat"));
-  if (!radio.write(heartbeat, sizeof(heartbeat))) {
-    setupRadio();
-    Serial.println(F("Failed to send heartbeat"));
-  }
   radio.startListening();
 }
 
@@ -135,16 +186,18 @@ void setup(void) {
 uint32_t oldTime = millis();
 int dataCounter = 0;
 
-void loop() {
-  char data[18];
+void loop() {  
   disconnection.update();
   if (radio.available()) {
-    //TODO change ack value for some feedback
+    //TODO change ack value for some feedback    
     radio.writeAckPayload(1, &ack, sizeof(ack));
 
     dataCounter++;
     if (millis() - oldTime > 1000) {
+#ifdef DEBUG      
       Serial.println(dataCounter);
+#endif      
+      ack[4] = uint8_t(constrain(dataCounter,0,255));
       dataCounter = 0;
       oldTime+=1000;
     }
@@ -154,7 +207,7 @@ void loop() {
     radio.read(data, sizeof(data));
     
 
-#ifdef DEBUG
+#ifdef DEBUG_RAW
     for (int i = 0; i < sizeof(data); i++) {
       Serial.print(data[i]);
     }
@@ -182,25 +235,38 @@ void loop() {
       roll.writeMicroseconds(1000 + charArrayToInt(bluetoothMessage->roll));
       pitch.writeMicroseconds(1000 + charArrayToInt(bluetoothMessage->pitch));
       switch (bluetoothMessage->flightMode) {
-        case 'S':
+        case '1':
           channel5.writeMicroseconds(1000);
           break;
-        case 'H':
+        case '2':
           channel5.writeMicroseconds(1300);
           break;
-        case 'L':
+        case '3':
           channel5.writeMicroseconds(1400);
           break;
-        case 'A':
+        case '4':
           channel5.writeMicroseconds(1550);
           break;
-        case 'B':
+        case '5':
           channel5.writeMicroseconds(1700);
           break;
+        case '6':
+          channel5.writeMicroseconds(1900);
+          break;        
         default:
           channel5.writeMicroseconds(1000);
           break;
       }
+      if(bluetoothMessage->ch7 == '1')
+        channel7.writeMicroseconds(2000);
+      else
+        channel7.writeMicroseconds(1000);
+
+      if(bluetoothMessage->ch8 == '1')
+        channel8.writeMicroseconds(2000);
+      else
+        channel8.writeMicroseconds(1000);
+      
     }
   }
 }
